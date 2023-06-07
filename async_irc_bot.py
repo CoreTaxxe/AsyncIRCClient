@@ -69,7 +69,6 @@ def parse_command(cmp) -> Union[Command, None]:
 
         case "001" | "002" | "003" | "004" | "353" | "366" | "372" | "375" | "376" | "433" | "474":
             parsed_command.command = command_parts[0]
-            parsed_command.command = command_parts[1]
 
         case _:
             return logger.error(f"\n\nUnexpected Command: {command_parts[0]} ({command_parts})\n")
@@ -417,11 +416,38 @@ class TwitchIRCBotInterfaceMixin(object):
     async def on_client_ready(self, message: Message) -> None:
         """called when client is ready (001:RPL_WELCOME)"""
 
-    async def on_host_info(self, message : Message) -> None:
+    async def on_host_info(self, message: Message) -> None:
         """called when server sends host info (002:RPL_YOURHOST)"""
 
-    async def on_host_creation_info(self, message : Message) -> None:
+    async def on_host_creation_info(self, message: Message) -> None:
         """called when server sends creation info (003:RPL_CREATED)"""
+
+    async def on_host_mode_info(self, message: Message) -> None:
+        """called on server sends user channel mode info (004:RPL_MYINFO)"""
+
+    async def on_user_list_start(self, message: Message) -> None:
+        """called on server starts sending user list info (353:RPL_NAMEREPLY)"""
+
+    async def on_user_list_end(self, message: Message) -> None:
+        """called on server ends sending user list info (366:RPL_ENDOFNAMES )"""
+
+    async def on_message_of_the_day(self, message: Message) -> None:
+        """called on server sends message of the day (372:RPL_MOTD)"""
+
+    async def on_message_of_the_day_start(self, message: Message) -> None:
+        """called on server starts sending message of the day (375:RPL_MOTDSTART)"""
+
+    async def on_message_of_the_day_end(self, message: Message) -> None:
+        """called on server ends sending message of the day (376:RPL_ENDOFMOTD)"""
+
+    async def on_no_nickname_given(self, message: Message) -> None:
+        """called on no nickname given (431:ERR_NONICKNAMEGIVEN)"""
+
+    async def on_nickname_in_use(self, message: Message) -> None:
+        """called on nickname in use (433:ERR_NICKNAMEINUSE)"""
+
+    async def on_banned_from_channel(self, message: Message) -> None:
+        """called on client banned from channel (474:ERR_BANNEDFROMCHANNEL)"""
 
     async def on_client_joined(self, message: Message) -> None:
         """called when client joined (JOIN)"""
@@ -444,11 +470,14 @@ class TwitchIRCBotInterfaceMixin(object):
     async def on_clear_chat(self, message: Message) -> None:
         """called on clear chat (CLEARCHAT)"""
 
+    async def on_message(self, message: Message) -> None:
+        """called on message (PRIVMSG)"""
+
 
 class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
     TWITCH_IRC_SERVER: str = "irc.chat.twitch.tv"
     TWITCH_IRC_PORT: int = 6667
-    command_callbacks: dict[str, Callable] = {}
+    command_callbacks: dict[str, tuple[bool, Callable]] = {}
 
     def __init__(self, oauth_token: str, nick_name: str, channel: str, **kwargs):
         super().__init__(
@@ -462,35 +491,59 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         self._channel: str = channel
 
     @staticmethod
-    def command(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def command(name: str, mod_only: bool = False):
         """
         registers function in command table
         :param name: name to register as
+        :param mod_only: is command mod only
         :return: decorator
         """
 
-        def decorator(function: Callable[..., Any]) -> Callable[..., Any]:
+        def decorator(function):
             """
-            decorator function
-            :param function: decorated function
-            :return: wrapper
+            Decorator function to wrap the original function and add it to the command table.
+
+            :param function: The function to be wrapped.
+            :return: The wrapper function.
             """
 
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
+            async def wrapper(*args: Any, **kwargs: Any) -> Any:
                 """
-                wrapper
-                :param args: args
-                :param kwargs: kwargs
-                :return: function returns values
-                """
-                return function(*args, **kwargs)
+                Wrapper function that executes the original function.
 
-            # Add the wrapped function to the command callbacks dictionary
-            TwitchIRCBot.command_callbacks[name] = function
+                :param args: Positional arguments passed to the function.
+                :param kwargs: Keyword arguments passed to the function.
+                :return: The result of the original function.
+                """
+                return await function(*args, **kwargs)
+
+            TwitchIRCBot.command_callbacks[name] = (mod_only, wrapper)
 
             return wrapper
 
         return decorator
+
+    def _check_commands(self, message: Message) -> None:
+        """
+        check if message contains a command
+        """
+        # is not a command
+        if not message.parameters.startswith("!"):
+            return
+
+        # split after '!'
+        command_parts: list[str] = message.parameters[1:].split()
+        command_name: str = command_parts[0]
+        command_data: tuple[bool, Callable] = TwitchIRCBot.command_callbacks.get(command_name)
+
+        if command_data is None:
+            return logger.warning(f"No bound command found for: {command_parts}")
+
+        # is mod only
+        if command_data[0]:
+            logger.warning("Mod checking is not implemented yet.")
+
+        self._loop.create_task(command_data[1](self))
 
     async def _on_protocol_done_connecting(self) -> None:
         """
@@ -563,7 +616,8 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
                 pass
 
             case "PRIVMSG":
-                pass
+                self._check_commands(parsed_message)
+                callback = self.on_message
 
             case "ROOMSTATE":
                 pass
@@ -593,31 +647,34 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
                 callback = self.on_host_info
 
             case "003":  # server creation date
-                pass
+                callback = self.on_host_creation_info
 
             case "004":  # supported user/channel modes + other stuff
-                pass
+                callback = self.on_host_mode_info
 
             case "353":  # list users in channel
-                pass
+                callback = self.on_user_list_start
 
             case "366":  # end of user list (353)
-                pass
+                callback = self.on_user_list_end
 
             case "372":  # message of the day
-                pass
+                callback = self.on_message_of_the_day
 
-            case "376":  # end of message of the day
-                pass
+            case "375":  # start message of the day list
+                callback = self.on_message_of_the_day_start
+
+            case "376":  # end of message of the day list
+                callback = self.on_message_of_the_day_end
 
             case "431":  # invalid nick
-                pass
+                callback = self.on_no_nickname_given
 
             case "433":  # nick in use
-                pass
+                callback = self.on_nickname_in_use
 
             case "474":  # banned
-                pass
+                callback = self.on_banned_from_channel
 
             case _:
                 return logger.warning(f"Invalid command: Callback not found for: {parsed_message.command.command}")
