@@ -65,19 +65,14 @@ def parse_command(cmp) -> Union[Command, None]:
             parsed_command.command = command_parts[0]
 
         case "431":
-            logger.warning(f"Unsupported IRC command: {command_parts[2]}")
-            return None
+            return logger.warning(f"Unsupported IRC command: {command_parts[2]}")
 
-        case "001":
+        case "001" | "002" | "003" | "004" | "353" | "366" | "372" | "375" | "376" | "433" | "474":
             parsed_command.command = command_parts[0]
             parsed_command.command = command_parts[1]
 
-        case "002" | "003" | "004" | "353" | "366" | "372" | "375" | "376":
-            logger.debug(f"Numeric message: {command_parts[0]}")
-
         case _:
-            logger.error(f"\n\nUnexpected Command: {command_parts[0]} ({command_parts})\n")
-            return None
+            return logger.error(f"\n\nUnexpected Command: {command_parts[0]} ({command_parts})\n")
 
     return parsed_command
 
@@ -419,23 +414,35 @@ class TwitchIRCBotInterfaceMixin(object):
     holds interface methods for third-party-users to retain visibility in irc class
     """
 
-    async def on_irc_capabilities(self, message: Message) -> None:
-        """called when receiving command and tag capabilities"""
-
     async def on_client_ready(self, message: Message) -> None:
-        """called when client is ready"""
+        """called when client is ready (001:RPL_WELCOME)"""
+
+    async def on_host_info(self, message : Message) -> None:
+        """called when server sends host info (002:RPL_YOURHOST)"""
+
+    async def on_host_creation_info(self, message : Message) -> None:
+        """called when server sends creation info (003:RPL_CREATED)"""
 
     async def on_client_joined(self, message: Message) -> None:
-        """called when client joined"""
+        """called when client joined (JOIN)"""
 
     async def on_user_join(self, message: Message) -> None:
-        """called if any user joins the channel"""
+        """called if any user joins the channel (JOIN)"""
 
     async def on_user_left(self, message: Message) -> None:
-        """called if any user leaves or gets banned"""
+        """called on user leaves or gets banned (PART)"""
+
+    async def on_irc_capabilities(self, message: Message) -> None:
+        """called when receiving command and tag capabilities (CAP) """
 
     async def on_global_user_state(self, message: Message) -> None:
-        """called on global user state update"""
+        """called on global user state update (GLOBALUSERSTATE)"""
+
+    async def on_notice(self, message: Message) -> None:
+        """called on notice (NOTICE)"""
+
+    async def on_clear_chat(self, message: Message) -> None:
+        """called on clear chat (CLEARCHAT)"""
 
 
 class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
@@ -530,20 +537,87 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         if not message:
             return logger.debug("Message is empty.")
 
+        logger.debug(f"Parsing: {message}")
         parsed_message: Message = parse_message(message)
+
+        if parsed_message is None:
+            return logger.debug("Nothing parsed.")
 
         logger.debug(f"Parsed: {parsed_message}")
 
-        callback: Union[Callable[[Message], Coroutine[Any, Any, None]], None]
+        callback: Union[Callable[[Message], Coroutine[Any, Any, None]], None] = None
         match parsed_message.command.command:
-            case self._nick_name:
-                callback = self.on_client_ready
-
             case "CAP":
                 callback = self.on_irc_capabilities
 
             case "JOIN":
                 callback = self.on_client_joined if parsed_message.source.nick == self._nick_name else self.on_user_join
+
+            case "NOTICE":
+                pass
+
+            case "CLEARCHAT":
+                pass
+
+            case "HOSTTARGET":
+                pass
+
+            case "PRIVMSG":
+                pass
+
+            case "ROOMSTATE":
+                pass
+
+            case "USERSTATE":
+                pass
+
+            case "GLOBALUSERSTATE":
+                pass
+
+            case "PING":
+                pass
+
+            case "PONG":
+                pass
+
+            case "RECONNECT":
+                pass
+
+            case "USERNOTICE":
+                pass
+
+            case "001":  # successful connection + other auth details
+                callback = self.on_client_ready
+
+            case "002":  # server hostname and version
+                callback = self.on_host_info
+
+            case "003":  # server creation date
+                pass
+
+            case "004":  # supported user/channel modes + other stuff
+                pass
+
+            case "353":  # list users in channel
+                pass
+
+            case "366":  # end of user list (353)
+                pass
+
+            case "372":  # message of the day
+                pass
+
+            case "376":  # end of message of the day
+                pass
+
+            case "431":  # invalid nick
+                pass
+
+            case "433":  # nick in use
+                pass
+
+            case "474":  # banned
+                pass
 
             case _:
                 return logger.warning(f"Invalid command: Callback not found for: {parsed_message.command.command}")
@@ -561,4 +635,3 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         """
         logger.debug(f"Joining {channel}")
         self.send_irc_data(f"JOIN #{channel}")
-
