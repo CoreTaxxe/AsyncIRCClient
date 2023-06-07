@@ -561,3 +561,4 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         """
         logger.debug(f"Joining {channel}")
         self.send_irc_data(f"JOIN #{channel}")
+
