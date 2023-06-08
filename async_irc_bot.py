@@ -620,7 +620,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
 
         # is mod only
         if command_data[0] and not self.is_mod_or_broadcaster(message):
-            return logger.debug(f"User {message.source.nick}")
+            return logger.debug(f"User {message.source.nick} tried to issue mod-only command: {message.parameters}")
 
         self._loop.create_task(command_data[1](self, message))
 
