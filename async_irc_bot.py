@@ -182,8 +182,6 @@ def parse_message(message_string: str) -> Union[None, Message]:
     :param message_string: message string
     :return: Message
     """
-    logger.debug(f"Parsing: {message_string}")
-
     message = Message()
 
     raw_tags_component: Union[None, str] = None
@@ -739,7 +737,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
                 callback = self.on_reconnect
 
             case "USERNOTICE":
-                self._check_user_notice(message)
+                self._check_user_notice(parsed_message)
                 callback = self.on_user_notice
 
             case "001":  # successful connection + other auth details
