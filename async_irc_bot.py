@@ -285,6 +285,8 @@ class AsyncIRCClientProtocol(asyncio.Protocol):
             decoded_data: str = data.decode()
             message: str
             for message in decoded_data.split("\r\n"):
+                if not message:
+                    continue
                 self._on_data_received_callback(message)
 
     def send_irc_data(self, data: str, log: bool = True) -> None:
@@ -334,16 +336,17 @@ class IRCClient(IRCClientInterfaceMixin):
         self._event_handler: dict[str, Callable] = {}
         self._is_connected: bool = False
 
-    def send_irc_data(self, data: str) -> None:
+    def send_irc_data(self, data: str, log: bool = True) -> None:
         """
-        send irc data
+        send irc data.
         :param data: data to send
+        :param log: log to console
         :return: None
         """
         if not self._is_connected:
             return logger.error("Bot is not connected")
 
-        self._protocol.send_irc_data(data)
+        self._protocol.send_irc_data(data, log)
 
     def run(self) -> None:
         """
@@ -357,7 +360,11 @@ class IRCClient(IRCClientInterfaceMixin):
         # create task of our run method
         self._loop.create_task(self._connect_and_run())
         # run the loop forever
-        self._loop.run_forever()
+        try:
+            self._loop.run_forever()
+        except KeyboardInterrupt as error:
+            logger.debug(error)
+            self._loop.stop()
 
     async def _connect_and_run(self) -> None:
         """
@@ -461,11 +468,32 @@ class TwitchIRCBotInterfaceMixin(object):
     async def on_irc_capabilities(self, message: Message) -> None:
         """called when receiving command and tag capabilities (CAP) """
 
+    async def on_user_state(self, message: Message) -> None:
+        """called on user state (USERSTATE)"""
+
     async def on_global_user_state(self, message: Message) -> None:
         """called on global user state update (GLOBALUSERSTATE)"""
 
     async def on_notice(self, message: Message) -> None:
         """called on notice (NOTICE)"""
+
+    async def on_hosttarget(self, message: Message) -> None:
+        """called on hosttarget (HOSTTARGET)"""
+
+    async def on_roomstate(self, message: Message) -> None:
+        """called on roomstate (ROOMSTATE)"""
+
+    async def on_ping(self, message: Message) -> None:
+        """called on ping received (PING)"""
+
+    async def on_pong(self, message: Message) -> None:
+        """called on pong received (PONG)"""
+
+    async def on_reconnect(self, message: Message) -> None:
+        """called on reconnect (RECONNECT)"""
+
+    async def on_user_notice(self, message: Message) -> None:
+        """called on user notice (USERNOTICE)"""
 
     async def on_clear_chat(self, message: Message) -> None:
         """called on clear chat (CLEARCHAT)"""
@@ -478,6 +506,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
     TWITCH_IRC_SERVER: str = "irc.chat.twitch.tv"
     TWITCH_IRC_PORT: int = 6667
     command_callbacks: dict[str, tuple[bool, Callable]] = {}
+    tasks: list[Callable] = []
 
     def __init__(self, oauth_token: str, nick_name: str, channel: str, **kwargs):
         super().__init__(
@@ -523,6 +552,54 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
 
         return decorator
 
+    @staticmethod
+    def loop(seconds: int):
+        """
+        repeat function in given intervals
+        :param seconds: seconds
+        :return: None
+        """
+
+        def decorator(function: Callable):
+            """
+            decorator
+            :param function: functon to decorate
+            :return: wrapper
+            """
+
+            async def wrapper(*args, **kwargs):
+                """
+                wrapper function
+                :param args: args
+                :param kwargs: kwargs
+                :return: None
+                """
+                while True:
+                    await function(*args, **kwargs)
+                    await asyncio.sleep(seconds)
+
+            TwitchIRCBot.tasks.append(wrapper)
+
+            return wrapper
+
+        return decorator
+
+    def _send_pong(self) -> None:
+        """
+        send pong response
+        :returns: None
+        """
+        self.send_irc_data("PONG :tmi.twitch.tv")
+
+    def _reconnect(self) -> None:
+        """
+        reconnect to server
+        :returns: None
+        """
+        self._transport.close()
+        self._loop.stop()
+        self.run()
+
     def _check_commands(self, message: Message) -> None:
         """
         check if message contains a command
@@ -551,12 +628,16 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         :return: None
         """
         await super()._on_protocol_done_connecting()
-        await self._login()
-        await self._requests_tags()
-        await self._request_commands()
-        await self.join(self._channel)
 
-    async def _login(self) -> None:
+        for task in self.tasks:
+            self._loop.create_task(task(self))
+
+        self._login()
+        self._requests_tags()
+        self._request_commands()
+        self.join(self._channel)
+
+    def _login(self) -> None:
         """
         login to twitch using oauth token and nickname
         :return: None
@@ -565,7 +646,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         self.send_irc_data(f"PASS oauth:{self._oauth_token}")
         self.send_irc_data(f"NICK {self._nick_name}")
 
-    async def _requests_tags(self) -> None:
+    def _requests_tags(self) -> None:
         """
         request tags
         :return: None
@@ -573,7 +654,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         logger.debug("Request Tags capability.")
         self.send_irc_data("CAP REQ :twitch.tv/tags")
 
-    async def _request_commands(self) -> None:
+    def _request_commands(self) -> None:
         """
         request commands
         :return: None
@@ -598,7 +679,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
 
         logger.debug(f"Parsed: {parsed_message}")
 
-        callback: Union[Callable[[Message], Coroutine[Any, Any, None]], None] = None
+        callback: Union[Callable[[Message], Coroutine[Any, Any, None]], None]
         match parsed_message.command.command:
             case "CAP":
                 callback = self.on_irc_capabilities
@@ -607,38 +688,40 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
                 callback = self.on_client_joined if parsed_message.source.nick == self._nick_name else self.on_user_join
 
             case "NOTICE":
-                pass
+                callback = self.on_notice
 
             case "CLEARCHAT":
-                pass
+                callback = self.on_clear_chat
 
             case "HOSTTARGET":
-                pass
+                callback = self.on_hosttarget
 
             case "PRIVMSG":
                 self._check_commands(parsed_message)
                 callback = self.on_message
 
             case "ROOMSTATE":
-                pass
+                callback = self.on_roomstate
 
             case "USERSTATE":
-                pass
+                callback = self.on_user_state
 
             case "GLOBALUSERSTATE":
-                pass
+                callback = self.on_global_user_state
 
             case "PING":
-                pass
+                self._send_pong()
+                callback = self.on_ping
 
             case "PONG":
-                pass
+                callback = self.on_pong
 
             case "RECONNECT":
-                pass
+                self._reconnect()
+                callback = self.on_reconnect
 
             case "USERNOTICE":
-                pass
+                callback = self.on_user_notice
 
             case "001":  # successful connection + other auth details
                 callback = self.on_client_ready
@@ -684,7 +767,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
 
         self._loop.create_task(callback(parsed_message))
 
-    async def join(self, channel: str) -> None:
+    def join(self, channel: str) -> None:
         """
         join channel
         :param channel: name
@@ -692,3 +775,12 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         """
         logger.debug(f"Joining {channel}")
         self.send_irc_data(f"JOIN #{channel}")
+
+    def leave(self, channel: str) -> None:
+        """
+        leave channel.
+        :param channel: channel to leave
+        :return: None
+        """
+        logger.debug(f"Leaving {channel}")
+        self.send_irc_data(f"PART #{channel}")
