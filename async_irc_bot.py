@@ -518,6 +518,8 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         self._oauth_token: str = oauth_token
         self._nick_name: str = nick_name
         self._channel: str = channel
+        self._has_commands: bool = False
+        self._has_tags: bool = False
 
     @staticmethod
     def command(name: str, mod_only: bool = False):
@@ -617,8 +619,8 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
             return logger.warning(f"No bound command found for: {command_parts}")
 
         # is mod only
-        if command_data[0]:
-            logger.warning("Mod checking is not implemented yet.")
+        if command_data[0] and not self.is_mod_or_broadcaster(message):
+            return logger.debug(f"User {message.source.nick}")
 
         self._loop.create_task(command_data[1](self, message))
 
@@ -682,6 +684,10 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         callback: Union[Callable[[Message], Coroutine[Any, Any, None]], None]
         match parsed_message.command.command:
             case "CAP":
+                if parsed_message.parameters == "twitch.tv/tags":
+                    self._has_tags = True
+                elif parsed_message.parameters == "twitch.tv/commands":
+                    self._has_commands = True
                 callback = self.on_irc_capabilities
 
             case "JOIN":
@@ -794,3 +800,41 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         """
         channel = self._channel if channel is None else channel
         self.send_irc_data(f"PRIVMSG #{channel} :{text}")
+
+    def is_mod(self, message: Message) -> bool:
+        """
+        checks if issuer is mod
+        :param message: message
+        :return: bool
+        """
+        if not self._has_tags:
+            logger.warning("Client has no tags: Cannot check.")
+            return False
+
+        if message.tags is None or message.tags.get("badges") is None:
+            return False
+
+        return message.tags.get("mod") == "1"
+
+    def is_broadcaster(self, message: Message) -> bool:
+        """
+        checks if issuer is broadcaster
+        :param message: message
+        :return: bool
+        """
+        if not self._has_tags:
+            logger.warning("Client has no tags: Cannot check.")
+            return False
+
+        if message.tags is None or message.tags.get("badges") is None:
+            return False
+
+        return message.tags.get("badges", {}).get("broadcaster", "") == '1'
+
+    def is_mod_or_broadcaster(self, message: Message) -> bool:
+        """
+        checks if msg is either mod or broadcaster
+        :param message: message
+        :return: bool
+        """
+        return self.is_mod(message) or self.is_broadcaster(message)
