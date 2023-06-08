@@ -620,7 +620,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         if command_data[0]:
             logger.warning("Mod checking is not implemented yet.")
 
-        self._loop.create_task(command_data[1](self))
+        self._loop.create_task(command_data[1](self, message))
 
     async def _on_protocol_done_connecting(self) -> None:
         """
@@ -784,3 +784,13 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         """
         logger.debug(f"Leaving {channel}")
         self.send_irc_data(f"PART #{channel}")
+
+    def send_chat_message(self, text: str, channel: str = None) -> None:
+        """
+        send chat message
+        :param text: text to send
+        :param channel: channel to send message in
+        :return: None
+        """
+        channel = self._channel if channel is None else channel
+        self.send_irc_data(f"PRIVMSG #{channel} :{text}")
