@@ -501,6 +501,9 @@ class TwitchIRCBotInterfaceMixin(object):
     async def on_message(self, message: Message) -> None:
         """called on message (PRIVMSG)"""
 
+    async def on_raid(self, message : Message) -> None:
+        """called on raid event (msg-id == raid)"""
+
 
 class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
     TWITCH_IRC_SERVER: str = "irc.chat.twitch.tv"
@@ -624,6 +627,15 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
 
         self._loop.create_task(command_data[1](self, message))
 
+    def _check_user_notice(self, message: Message) -> None:
+        """
+        check user notice for certain events
+        :param message: message
+        :return: None
+        """
+        if self._has_tags and message.tags.get("msg-id") == "raid":
+            self._loop.create_task(self.on_raid(message))
+
     async def _on_protocol_done_connecting(self) -> None:
         """
         Do not use on_connected_to_server: Should be reserved for users
@@ -727,6 +739,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
                 callback = self.on_reconnect
 
             case "USERNOTICE":
+                self._check_user_notice(message)
                 callback = self.on_user_notice
 
             case "001":  # successful connection + other auth details
