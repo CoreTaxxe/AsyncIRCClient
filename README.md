@@ -6,7 +6,7 @@ First async code so takee everything with a bit of caution
 Example usage
 
 ```py
-from async_irc_bot.async_irc_bot import TwitchIRCBot, Message
+from async_irc_bot.async_irc_client import TwitchIRCBot, Message
 from loguru import logger
 
 

@@ -1,1 +1,1 @@
-from .async_irc_bot import *
+from .async_irc_client import *
