@@ -6,7 +6,7 @@ setup(
     description='Async IRC Client',
     author='CoreTaxxe',
     author_email='coretaxxe@gmail.com',
-    packages=['AsyncIRCClient'],
+    packages=['async_irc_client'],
     install_requires=[
         "loguru"
     ],
