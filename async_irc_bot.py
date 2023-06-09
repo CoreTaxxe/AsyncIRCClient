@@ -303,13 +303,13 @@ class AsyncIRCClientProtocol(asyncio.Protocol):
 
 
 class IRCClientInterfaceMixin(object):
-    async def on_connected_to_server(self) -> None:
+    def on_connected_to_server(self) -> None:
         """
         called as soon as the client connected to the server
         :return: None
         """
 
-    async def on_disconnected_from_server(self, exception: Exception) -> None:
+    def on_disconnected_from_server(self, exception: Exception) -> None:
         """
         called as soon as the client disconnects from the server
         :param exception: exception that caused the disconnect
@@ -356,13 +356,34 @@ class IRCClient(IRCClientInterfaceMixin):
             self._loop = asyncio.get_event_loop() if is_event_loop_running() else asyncio.new_event_loop()
 
         # create task of our run method
-        self._loop.create_task(self._connect_and_run())
+        self._loop.create_task(self._connect_and_run(), name="InitialConnectAndRun")
         # run the loop forever
         try:
             self._loop.run_forever()
         except KeyboardInterrupt as error:
-            logger.debug(error)
-            self._loop.stop()
+            self._stop_tasks_and_loop(error)
+        logger.info("Stopped")
+
+    def _stop_tasks_and_loop(self, error: KeyboardInterrupt) -> None:
+        """
+        stop tasks and loop
+        :param error: error
+        :return: None
+        """
+        logger.debug(error)
+        self._transport.close()
+        pending_tasks = asyncio.all_tasks(self._loop)
+
+        async def wrapper():
+            for task in pending_tasks:
+                logger.debug(f"Cancelling {task}")
+                task.cancel()
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+            logger.debug(f"Cancelled {pending_tasks}")
+
+        logger.debug(f"Current Task: {asyncio.current_task(self._loop)}")
+        self._loop.run_until_complete(wrapper())
+        self._loop.stop()
 
     async def _connect_and_run(self) -> None:
         """
@@ -383,7 +404,7 @@ class IRCClient(IRCClientInterfaceMixin):
         called as soon as the protocol is done connecting and create_connection has returned
         :return: None
         """
-        await self.on_connected_to_server()
+        self.on_connected_to_server()
 
     def _on_protocol_connection_made(self, transport: transports.Transport) -> None:
         """
@@ -401,7 +422,11 @@ class IRCClient(IRCClientInterfaceMixin):
         :return: None
         """
         self._is_connected = False
-        logger.exception(f"Disconnected from server with exception: {exception}")
+        if exception is Exception:
+            logger.exception(f"Disconnected from server with exception: {exception}")
+        else:
+            logger.warning(f"Disconnected from server: {exception}")
+
         self._transport.close()
         self.on_disconnected_from_server(exception)
 
@@ -499,7 +524,7 @@ class TwitchIRCBotInterfaceMixin(object):
     async def on_message(self, message: Message) -> None:
         """called on message (PRIVMSG)"""
 
-    async def on_raid(self, message : Message) -> None:
+    async def on_raid(self, message: Message) -> None:
         """called on raid event (msg-id == raid)"""
 
 
@@ -508,6 +533,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
     TWITCH_IRC_PORT: int = 6667
     command_callbacks: dict[str, tuple[bool, Callable]] = {}
     tasks: list[Callable] = []
+    _running_tasks: list[Callable] = []
 
     def __init__(self, oauth_token: str, nick_name: str, channel: str, **kwargs):
         super().__init__(
@@ -599,9 +625,18 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         reconnect to server
         :returns: None
         """
-        self._transport.close()
-        self._loop.stop()
-        self.run()
+
+        def wrapper():
+            self._transport.close()
+            pending_tasks = asyncio.all_tasks(self._loop)
+            for task in pending_tasks:
+                logger.warning(f"Stopping task {task}")
+                task.cancel()
+            logger.info(asyncio.current_task(self._loop))
+            asyncio.gather(*pending_tasks, return_exceptions=True)
+            self._loop.create_task(self._connect_and_run())
+
+        self._loop.call_soon_threadsafe(wrapper)
 
     def _check_commands(self, message: Message) -> None:
         """
