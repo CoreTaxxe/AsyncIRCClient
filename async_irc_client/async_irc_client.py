@@ -685,11 +685,12 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         return decorator
 
     @staticmethod
-    def loop(seconds: int = 0, time: str = None):
+    def loop(seconds: int = 0, time: str = None, wait_first: bool = False):
         """
         repeat function in given intervals
         :param seconds: seconds
         :param time: time to repeat function at (for example 12:00)
+        :param wait_first: wait first before executing the function
         :return: None
         """
 
@@ -707,13 +708,21 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
                 :param kwargs: kwargs
                 :return: None
                 """
-                while True:
-                    await function(*args, **kwargs)
+                if wait_first:
+                    while True:
+                        if time is None:
+                            await asyncio.sleep(seconds)
+                        else:
+                            await asyncio.sleep(get_time_difference(time))
+                        await function(*args, **kwargs)
+                else:
+                    while True:
+                        await function(*args, **kwargs)
 
-                    if time is None:
-                        await asyncio.sleep(seconds)
-                    else:
-                        await asyncio.sleep(get_time_difference(time))
+                        if time is None:
+                            await asyncio.sleep(seconds)
+                        else:
+                            await asyncio.sleep(get_time_difference(time))
 
             TwitchIRCBot.tasks.append(wrapper)
 
