@@ -1,8 +1,8 @@
 import asyncio
 from asyncio import transports
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Union, Callable, Any, Coroutine
-
+import datetime
 from loguru import logger
 
 
@@ -16,6 +16,39 @@ def is_event_loop_running() -> bool:
         return loop.is_running()
     except RuntimeError as _error:
         return False
+
+
+def get_time_difference(time_str: str) -> float:
+    """
+    get time difference
+    :param time_str:
+    :return:
+    """
+    now = datetime.datetime.now().time()
+
+    # Parse the target time from the input string
+    target_time = datetime.datetime.strptime(time_str, '%H:%M').time()
+
+    # Calculate the time difference between now and the target time
+    time_diff = datetime.datetime.combine(datetime.date.today(), target_time) - datetime.datetime.combine(
+        datetime.date.today(), now)
+
+    # If the target time has already passed today, calculate the time difference for tomorrow
+    if time_diff.total_seconds() < 0:
+        tomorrow = datetime.date.today() + datetime.timedelta(days=1)
+        time_diff = datetime.datetime.combine(tomorrow, target_time) - datetime.datetime.combine(
+            datetime.date.today(), now)
+
+    return time_diff.total_seconds()
+
+
+@dataclass
+class CommandCallback(object):
+    name: str
+    callback: Callable
+    mod_only: bool = False
+    aliases: list[str] = field(default_factory=lambda: [])
+    case_sensitive: bool = True
 
 
 @dataclass
@@ -232,6 +265,50 @@ def parse_message(message_string: str) -> Union[None, Message]:
         message.command = parse_parameters(raw_parameter_component, message.command)
 
     return message
+
+
+class Timer(object):
+    def __init__(self, timeout: int, callback: Callable):
+        """
+        async timer
+        :param timeout: timeout
+        :param callback: callback
+        """
+        self._timeout: int = timeout
+        self._callback: Callable = callback
+        self._task: Union[asyncio.Task, None] = None
+
+    async def _wait(self) -> None:
+        """
+        wait until timeout has expired
+        :return: None
+        """
+        await asyncio.sleep(self._timeout)
+        await self._callback()
+
+    def start(self) -> None:
+        """
+        start timer
+        :return: None
+        """
+        self._task = asyncio.get_event_loop().create_task(self._wait())
+
+    def cancel(self) -> None:
+        """
+        cancel timer
+        :return: None
+        """
+        if self._task is None:
+            raise ValueError("Timer has not been started yet.")
+        self._task.cancel()
+
+    def restart(self) -> None:
+        """
+        restart timer
+        :return: None
+        """
+        self.cancel()
+        self.start()
 
 
 class AsyncIRCClientProtocol(asyncio.Protocol):
@@ -531,11 +608,20 @@ class TwitchIRCBotInterfaceMixin(object):
 class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
     TWITCH_IRC_SERVER: str = "irc.chat.twitch.tv"
     TWITCH_IRC_PORT: int = 6667
-    command_callbacks: dict[str, tuple[bool, Callable]] = {}
+    command_callbacks: dict[str, CommandCallback] = {}
+    case_insensitive: list[str] = []
     tasks: list[Callable] = []
     _running_tasks: list[Callable] = []
 
-    def __init__(self, oauth_token: str, nick_name: str, channel: str, **kwargs):
+    def __init__(self, oauth_token: str, nick_name: str, channel: str, timeout: int = 500, **kwargs):
+        """
+        constructor
+        :param oauth_token: oauth token
+        :param nick_name: nickname to use
+        :param channel: channel name
+        :param timeout: request ping after n seconds and reconnect after n seconds if no answer was received
+        :param kwargs: kwargs
+        """
         super().__init__(
             server=kwargs.pop("server", TwitchIRCBot.TWITCH_IRC_SERVER),
             port=kwargs.pop("port", TwitchIRCBot.TWITCH_IRC_PORT),
@@ -547,15 +633,23 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         self._channel: str = channel
         self._has_commands: bool = False
         self._has_tags: bool = False
+        self._timeout: int = timeout
+        self._disconnect_timer: Timer = Timer(self._timeout, self._on_disconnect_timer_timeout)
+        self._pong_response_timer: Timer = Timer(20, self._on_pong_response_timer_timeout)
 
     @staticmethod
-    def command(name: str, mod_only: bool = False):
+    def command(name: str, mod_only: bool = False, aliases: list[str] = None, case_sensitive: bool = True):
         """
         registers function in command table
         :param name: name to register as
         :param mod_only: is command mod only
+        :param aliases: alternative names
+        :param case_sensitive: case-sensitive commands
         :return: decorator
         """
+
+        if aliases is None:
+            aliases = []
 
         def decorator(function):
             """
@@ -575,17 +669,27 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
                 """
                 return await function(*args, **kwargs)
 
-            TwitchIRCBot.command_callbacks[name] = (mod_only, wrapper)
+            command_callback: CommandCallback = CommandCallback(name, wrapper, mod_only, aliases, case_sensitive)
+
+            TwitchIRCBot.command_callbacks[name] = command_callback
+
+            if not case_sensitive:
+                TwitchIRCBot.case_insensitive.append(name.lower())
+
+            for alias in aliases:
+                TwitchIRCBot.command_callbacks[alias] = command_callback
+                TwitchIRCBot.case_insensitive.append(alias.lower())
 
             return wrapper
 
         return decorator
 
     @staticmethod
-    def loop(seconds: int):
+    def loop(seconds: int = 0, time: str = None):
         """
         repeat function in given intervals
         :param seconds: seconds
+        :param time: time to repeat function at (for example 12:00)
         :return: None
         """
 
@@ -605,7 +709,11 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
                 """
                 while True:
                     await function(*args, **kwargs)
-                    await asyncio.sleep(seconds)
+
+                    if time is None:
+                        await asyncio.sleep(seconds)
+                    else:
+                        await asyncio.sleep(get_time_difference(time))
 
             TwitchIRCBot.tasks.append(wrapper)
 
@@ -620,11 +728,27 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         """
         self.send_irc_data("PONG :tmi.twitch.tv")
 
+    def _send_ping(self) -> None:
+        """
+        send pong response
+        :returns: None
+        """
+        self.send_irc_data("PING :tmi.twitch.tv")
+
+    def _on_pong(self) -> None:
+        """
+        on pong received
+        :return: None
+        """
+        self._pong_response_timer.cancel()
+
     def _reconnect(self) -> None:
         """
         reconnect to server
         :returns: None
         """
+        self._pong_response_timer.cancel()
+        self._disconnect_timer.cancel()
 
         def wrapper():
             self._transport.close()
@@ -649,16 +773,20 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         # split after '!'
         command_parts: list[str] = message.parameters[1:].split()
         command_name: str = command_parts[0]
-        command_data: tuple[bool, Callable] = TwitchIRCBot.command_callbacks.get(command_name)
 
-        if command_data is None:
+        if command_name.lower() in self.case_insensitive:
+            command_name = command_name.lower()
+
+        command_callback: CommandCallback = TwitchIRCBot.command_callbacks.get(command_name)
+
+        if command_callback is None:
             return logger.warning(f"No bound command found for: {command_parts}")
 
         # is mod only
-        if command_data[0] and not self.is_mod_or_broadcaster(message):
+        if command_callback.mod_only and not self.is_mod_or_broadcaster(message):
             return logger.debug(f"User {message.source.nick} tried to issue mod-only command: {message.parameters}")
 
-        self._loop.create_task(command_data[1](self, message))
+        self._loop.create_task(command_callback.callback(self, message))
 
     def _check_user_notice(self, message: Message) -> None:
         """
@@ -669,12 +797,30 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         if self._has_tags and message.tags.get("msg-id") == "raid":
             self._loop.create_task(self.on_raid(message))
 
+    async def _on_disconnect_timer_timeout(self) -> None:
+        """
+        on disconnect timer times out
+        :return: None
+        """
+        self._send_ping()
+        self._pong_response_timer.start()
+
+    async def _on_pong_response_timer_timeout(self) -> None:
+        """
+        on pong response timer times out
+        :return: None
+        """
+        self._reconnect()
+
     async def _on_protocol_done_connecting(self) -> None:
         """
         Do not use on_connected_to_server: Should be reserved for users
         :return: None
         """
         await super()._on_protocol_done_connecting()
+
+        # start timer
+        self._disconnect_timer.start()
 
         for task in self.tasks:
             self._loop.create_task(task(self))
@@ -717,6 +863,9 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         """
         if not message:
             return logger.debug("Message is empty.")
+
+        # restart timer
+        self._disconnect_timer.restart()
 
         logger.debug(f"Parsing: {message}")
         parsed_message: Message = parse_message(message)
@@ -765,6 +914,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
                 callback = self.on_ping
 
             case "PONG":
+                self._on_pong()
                 callback = self.on_pong
 
             case "RECONNECT":
