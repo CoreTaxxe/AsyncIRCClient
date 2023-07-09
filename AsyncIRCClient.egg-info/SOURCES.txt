@@ -1,0 +1,9 @@
+README.md
+setup.py
+AsyncIRCClient.egg-info/PKG-INFO
+AsyncIRCClient.egg-info/SOURCES.txt
+AsyncIRCClient.egg-info/dependency_links.txt
+AsyncIRCClient.egg-info/requires.txt
+AsyncIRCClient.egg-info/top_level.txt
+async_irc_client/__init__.py
+async_irc_client/async_irc_client.py

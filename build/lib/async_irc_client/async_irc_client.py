@@ -6,15 +6,14 @@ import datetime
 from loguru import logger
 
 
-def is_event_loop_set() -> bool:
+def is_event_loop_running() -> bool:
     """
-    check if asyncio has loop set
+    check if asyncio has loop running
     :return: bool
     """
     try:
-        # check if any event loop is set
-        asyncio.get_event_loop()
-        return True
+        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+        return loop.is_running()
     except RuntimeError as _error:
         return False
 
@@ -292,8 +291,7 @@ class Timer(object):
         start timer
         :return: None
         """
-        loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
-        self._task = loop.create_task(self._wait())
+        self._task = asyncio.get_event_loop().create_task(self._wait())
 
     def cancel(self) -> None:
         """
@@ -301,7 +299,7 @@ class Timer(object):
         :return: None
         """
         if self._task is None:
-            return logger.warning("Timer has not been started yet.")
+            raise ValueError("Timer has not been started yet.")
         self._task.cancel()
 
     def restart(self) -> None:
@@ -413,10 +411,6 @@ class IRCClient(IRCClientInterfaceMixin):
         self._event_handler: dict[str, Callable] = {}
         self._is_connected: bool = False
 
-        # get event loop if none set
-        if self._loop is None:
-            self._loop = asyncio.get_event_loop() if is_event_loop_set() else asyncio.new_event_loop()
-
     def send_irc_data(self, data: str, log: bool = True) -> None:
         """
         send irc data.
@@ -434,6 +428,10 @@ class IRCClient(IRCClientInterfaceMixin):
         starts the clients mainloop
         :return: None
         """
+        # get event loop if none set
+        if self._loop is None:
+            self._loop = asyncio.get_event_loop() if is_event_loop_running() else asyncio.new_event_loop()
+
         # create task of our run method
         self._loop.create_task(self._connect_and_run(), name="InitialConnectAndRun")
         # run the loop forever
