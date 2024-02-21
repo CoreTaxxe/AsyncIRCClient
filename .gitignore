@@ -1,2 +1,7 @@
 /example_bot.py
 /.idea
+/build/
+/dist/
+/AsyncIRCClient.egg-info
+/venv/
+example.py

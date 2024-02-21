@@ -1,9 +1,14 @@
 import asyncio
+import datetime
 from asyncio import transports
 from dataclasses import dataclass, field
+from itertools import cycle
 from typing import Union, Callable, Any, Coroutine
-import datetime
+
 from loguru import logger
+from python_socks._errors import ProxyError
+from python_socks._types import ProxyType
+from python_socks.async_.asyncio import Proxy
 
 
 def is_event_loop_set() -> bool:
@@ -44,7 +49,7 @@ def get_time_difference(time_str: str) -> float:
 
 
 @dataclass
-class CommandCallback(object):
+class CommandCallback:
     name: str
     callback: Callable
     mod_only: bool = False
@@ -53,7 +58,7 @@ class CommandCallback(object):
 
 
 @dataclass
-class Command(object):
+class Command:
     command: Union[None, str] = None
     channel: Union[None, str] = None
     channel_raw: Union[None, str] = None
@@ -63,13 +68,13 @@ class Command(object):
 
 
 @dataclass
-class Source(object):
+class Source:
     nick: Union[None, str] = None
     host: Union[None, str] = None
 
 
 @dataclass
-class Message(object):
+class Message:
     tags: Union[None, dict[str, Union[None, dict, list[str]]]] = None
     source: Union[None, Source] = None
     command: Union[None, Command] = None
@@ -268,7 +273,7 @@ def parse_message(message_string: str) -> Union[None, Message]:
     return message
 
 
-class Timer(object):
+class Timer:
     def __init__(self, timeout: int, callback: Callable):
         """
         async timer
@@ -301,7 +306,8 @@ class Timer(object):
         :return: None
         """
         if self._task is None:
-            return logger.warning("Timer has not been started yet.")
+            logger.warning("Timer has not been started yet.")
+            return
         self._task.cancel()
 
     def restart(self) -> None:
@@ -338,6 +344,7 @@ class AsyncIRCClientProtocol(asyncio.Protocol):
         :param transport: base transport
         :return: None
         """
+        logger.debug(f"{self} Connected.")
         self._transport = transport
         if self._on_connection_made_callback is not None:
             self._on_connection_made_callback(transport)
@@ -348,6 +355,7 @@ class AsyncIRCClientProtocol(asyncio.Protocol):
         :param exception: exception
         :return: None
         """
+        logger.debug(f"{self} disconnected.")
         self._transport.close()
         if self._on_connection_made_callback is not None:
             self._on_connection_lost_callback(exception)
@@ -381,7 +389,7 @@ class AsyncIRCClientProtocol(asyncio.Protocol):
             logger.exception(error)
 
 
-class IRCClientInterfaceMixin(object):
+class IRCClientInterfaceMixin:
     def on_connected_to_server(self) -> None:
         """
         called as soon as the client connected to the server
@@ -398,12 +406,14 @@ class IRCClientInterfaceMixin(object):
 
 class IRCClient(IRCClientInterfaceMixin):
 
-    def __init__(self, server: str, port: int, loop: Union[asyncio.AbstractEventLoop, None] = None):
+    def __init__(self, server: str, port: int, loop: Union[asyncio.AbstractEventLoop, None] = None,
+                 proxies: list[Proxy] = None):
         """
         constructor
         :param server: server to connect to
         :param port: port to connect to
         :param loop: set custom event loop
+        :param proxies: list of proxy objects to use to mask connection
         """
         self._server: str = server
         self._port: int = port
@@ -412,10 +422,33 @@ class IRCClient(IRCClientInterfaceMixin):
         self._transport: Union[transports.Transport, None] = None
         self._event_handler: dict[str, Callable] = {}
         self._is_connected: bool = False
+        self._proxies: list[Proxy] = proxies or []
+        self._proxy_cycle: cycle[Proxy] = cycle(self._proxies)
+        self._use_proxies: bool = len(proxies) > 0
+        self._current_proxy: Proxy = None
+        self._retry_delay: int = 5
 
         # get event loop if none set
         if self._loop is None:
             self._loop = asyncio.get_event_loop() if is_event_loop_set() else asyncio.new_event_loop()
+
+    def add_proxy(self, proxy: Proxy) -> None:
+        self._proxies.append(proxy)
+        self._proxy_cycle = cycle(self._proxies)
+
+    def remove_proxy(self, proxy: Proxy) -> None:
+        self._proxies.remove(proxy)
+        self._proxy_cycle = cycle(self._proxies)
+
+    def set_proxies(self, proxies: list[Proxy]) -> None:
+        self._proxies = proxies
+        self._proxy_cycle = cycle(self._proxies)
+
+    def get_proxies(self) -> list[Proxy]:
+        return self._proxies
+
+    def get_current_proxy(self) -> Proxy:
+        return self._current_proxy
 
     def send_irc_data(self, data: str, log: bool = True) -> None:
         """
@@ -425,7 +458,8 @@ class IRCClient(IRCClientInterfaceMixin):
         :return: None
         """
         if not self._is_connected:
-            return logger.error("Bot is not connected")
+            logger.error("Bot is not connected")
+            return
 
         self._protocol.send_irc_data(data, log)
 
@@ -469,13 +503,34 @@ class IRCClient(IRCClientInterfaceMixin):
         connect and run irc loop
         :return: None
         """
-        self._transport, self._protocol = await self._loop.create_connection(
-            lambda: AsyncIRCClientProtocol(
-                on_connection_made=self._on_protocol_connection_made,
-                on_connection_lost=self._on_protocol_connection_lost,
-                on_data_received=self._on_protocol_data_received
-            ), self._server, self._port
-        )
+        if self._use_proxies:
+            try:
+                self._current_proxy: Proxy = next(self._proxy_cycle)
+                proxy_type: ProxyType = self._current_proxy._proxy_type
+                logger.debug(f"Using {proxy_type.name} Proxy {self._current_proxy}")
+                sock = await self._current_proxy.connect(dest_host=self._server, dest_port=self._port)
+            except ProxyError as error:
+                logger.exception(error)
+                await asyncio.sleep(self._retry_delay)
+                await self._connect_and_run()
+                return
+
+            self._transport, self._protocol = await self._loop.create_connection(
+                lambda: AsyncIRCClientProtocol(
+                    on_connection_made=self._on_protocol_connection_made,
+                    on_connection_lost=self._on_protocol_connection_lost,
+                    on_data_received=self._on_protocol_data_received
+                ), sock=sock
+            )
+
+        else:
+            self._transport, self._protocol = await self._loop.create_connection(
+                lambda: AsyncIRCClientProtocol(
+                    on_connection_made=self._on_protocol_connection_made,
+                    on_connection_lost=self._on_protocol_connection_lost,
+                    on_data_received=self._on_protocol_data_received
+                ), self._server, self._port
+            )
         await self._on_protocol_done_connecting()
 
     async def _on_protocol_done_connecting(self) -> None:
@@ -517,7 +572,7 @@ class IRCClient(IRCClientInterfaceMixin):
         """
 
 
-class TwitchIRCBotInterfaceMixin(object):
+class TwitchIRCBotInterfaceMixin:
     """
     holds interface methods for third-party-users to retain visibility in irc class
     """
@@ -791,11 +846,13 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         command_callback: CommandCallback = TwitchIRCBot.command_callbacks.get(command_name)
 
         if command_callback is None:
-            return logger.warning(f"No bound command found for: {command_parts}")
+            logger.warning(f"No bound command found for: {command_parts}")
+            return
 
         # is mod only
         if command_callback.mod_only and not self.is_mod_or_broadcaster(message):
-            return logger.debug(f"User {message.source.nick} tried to issue mod-only command: {message.parameters}")
+            logger.debug(f"User {message.source.nick} tried to issue mod-only command: {message.parameters}")
+            return
 
         self._loop.create_task(command_callback.callback(self, message))
 

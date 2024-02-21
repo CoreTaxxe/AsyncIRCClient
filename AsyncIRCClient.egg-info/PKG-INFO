@@ -1,15 +1,19 @@
 Metadata-Version: 2.1
 Name: AsyncIRCClient
-Version: 0.0.6
+Version: 0.0.7
 Summary: Async IRC Client
 Author: CoreTaxxe
 Author-email: coretaxxe@gmail.com
 Description-Content-Type: text/markdown
+Requires-Dist: loguru
 
 # AsyncIRCClient
 Async (Twitch-) IRC client
 
 First async code so takee everything with a bit of caution
+
+# Installation
+`pip install AsyncIRCClient`
 
 Example usage
 
