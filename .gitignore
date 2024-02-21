@@ -3,5 +3,5 @@
 /build/
 /dist/
 /AsyncIRCClient.egg-info
-/venv/
+/venv*
 example.py
