@@ -484,7 +484,8 @@ class IRCClient(IRCClientInterfaceMixin):
         :return: None
         """
         logger.debug(error)
-        self._transport.close()
+        if self._transport:
+            self._transport.close()
         pending_tasks = asyncio.all_tasks(self._loop)
 
         async def wrapper():
@@ -885,6 +886,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         Do not use on_connected_to_server: Should be reserved for users
         :return: None
         """
+        logger.debug("Protocol done connecting")
         await super()._on_protocol_done_connecting()
 
         # start timer
@@ -992,6 +994,9 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
             case "USERNOTICE":
                 self._check_user_notice(parsed_message)
                 callback = self.on_user_notice
+
+            case "PART":
+                callback = self.on_user_left
 
             case "001":  # successful connection + other auth details
                 callback = self.on_client_ready

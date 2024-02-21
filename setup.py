@@ -5,7 +5,7 @@ with open('README.md', 'r', encoding='utf-8') as f:
 
 setup(
     name='AsyncIRCClient',
-    version='0.0.7',
+    version='0.1.1',
     description='Async IRC Client',
     long_description=long_description,
     long_description_content_type='text/markdown',
@@ -13,6 +13,7 @@ setup(
     author_email='coretaxxe@gmail.com',
     packages=['async_irc_client'],
     install_requires=[
-        "loguru"
+        "loguru",
+        "python_socks"
     ],
 )
