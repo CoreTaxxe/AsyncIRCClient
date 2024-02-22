@@ -1,5 +1,9 @@
+__author__ = "coretaxxe"
+__version__ = "0.1.2"
+
 import asyncio
 import datetime
+import sys
 from asyncio import transports
 from dataclasses import dataclass, field
 from itertools import cycle
@@ -9,6 +13,8 @@ from loguru import logger
 from python_socks._errors import ProxyError
 from python_socks._types import ProxyType
 from python_socks.async_.asyncio import Proxy
+
+logger.debug(sys.version)
 
 
 def is_event_loop_set() -> bool:
@@ -308,7 +314,10 @@ class Timer:
         if self._task is None:
             logger.warning("Timer has not been started yet.")
             return
-        self._task.cancel()
+        try:
+            self._task.cancel()
+        except asyncio.CancelledError as error:
+            logger.debug(error)
 
     def restart(self) -> None:
         """
@@ -497,7 +506,10 @@ class IRCClient(IRCClientInterfaceMixin):
         logger.debug(f"Current Task: {asyncio.current_task(self._loop)}")
         for task in asyncio.all_tasks(self._loop):
             logger.debug(f"Cancelling task {task}")
-            task.cancel()
+            try:
+                task.cancel()
+            except asyncio.CancelledError as error:
+                logger.exception(error)
         self._loop.stop()
         logger.debug("Stopped.")
 
@@ -819,17 +831,16 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         self._pong_response_timer.cancel()
         self._disconnect_timer.cancel()
 
-        def wrapper():
-            self._transport.close()
-            pending_tasks = asyncio.all_tasks(self._loop)
-            for task in pending_tasks:
-                logger.warning(f"Stopping task {task}")
-                task.cancel()
-            logger.info(asyncio.current_task(self._loop))
-            asyncio.gather(*pending_tasks, return_exceptions=True)
-            self._loop.create_task(self._connect_and_run())
+        self._transport.close()
 
-        self._loop.call_soon_threadsafe(wrapper)
+        for task in asyncio.all_tasks(self._loop):
+            logger.warning(f"Stopping task {task}")
+            try:
+                task.cancel()
+            except asyncio.CancelledError as error:
+                logger.exception(error)
+        logger.info(asyncio.current_task(self._loop))
+        self._loop.create_task(self._connect_and_run())
 
     def _check_commands(self, message: Message) -> None:
         """
