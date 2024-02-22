@@ -477,27 +477,29 @@ class IRCClient(IRCClientInterfaceMixin):
             self._stop_tasks_and_loop(error)
         logger.info("Stopped")
 
-    def _stop_tasks_and_loop(self, error: KeyboardInterrupt) -> None:
+    def stop(self) -> None:
+        """
+        Stops the client
+        """
+        logger.info("Stopping.")
+        self._stop_tasks_and_loop("Stopping")
+
+    def _stop_tasks_and_loop(self, error: Union[KeyboardInterrupt, str] = None) -> None:
         """
         stop tasks and loop
         :param error: error
         :return: None
         """
-        logger.debug(error)
+        logger.debug(f"Stopping tasks and loop. Reason: {error}")
         if self._transport:
             self._transport.close()
-        pending_tasks = asyncio.all_tasks(self._loop)
-
-        async def wrapper():
-            for task in pending_tasks:
-                logger.debug(f"Cancelling {task}")
-                task.cancel()
-            await asyncio.gather(*pending_tasks, return_exceptions=True)
-            logger.debug(f"Cancelled {pending_tasks}")
 
         logger.debug(f"Current Task: {asyncio.current_task(self._loop)}")
-        self._loop.run_until_complete(wrapper())
+        for task in asyncio.all_tasks(self._loop):
+            logger.debug(f"Cancelling task {task}")
+            task.cancel()
         self._loop.stop()
+        logger.debug("Stopped.")
 
     async def _connect_and_run(self) -> None:
         """
@@ -560,7 +562,7 @@ class IRCClient(IRCClientInterfaceMixin):
         if exception is Exception:
             logger.exception(f"Disconnected from server with exception: {exception}")
         else:
-            logger.warning(f"Disconnected from server: {exception}")
+            logger.info(f"Disconnected from server. Reason: {exception}")
 
         self._transport.close()
         self.on_disconnected_from_server(exception)
