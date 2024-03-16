@@ -13,6 +13,8 @@ from loguru import logger
 from python_socks._errors import ProxyError
 from python_socks._types import ProxyType
 from python_socks.async_.asyncio import Proxy
+import atexit
+import os
 
 logger.debug(sys.version)
 
@@ -436,10 +438,14 @@ class IRCClient(IRCClientInterfaceMixin):
         self._use_proxies: bool = len(proxies) > 0
         self._current_proxy: Proxy = None
         self._retry_delay: int = 5
+        self._async_tasks: list[asyncio.Task] = []
 
         # get event loop if none set
         if self._loop is None:
             self._loop = asyncio.get_event_loop() if is_event_loop_set() else asyncio.new_event_loop()
+
+    def get_loop(self) -> asyncio.AbstractEventLoop:
+        return self._loop
 
     def add_proxy(self, proxy: Proxy) -> None:
         self._proxies.append(proxy)
@@ -478,20 +484,50 @@ class IRCClient(IRCClientInterfaceMixin):
         :return: None
         """
         # create task of our run method
-        self._loop.create_task(self._connect_and_run(), name="InitialConnectAndRun")
+        self._async_tasks.append(self._loop.create_task(self._connect_and_run(), name=f"InitialConnectAndRun:{self}"))
+        logger.info(f"Client {self} started.")
+
+    def mainloop(self) -> None:
+        """
+        Stats the clients mainloop. Blocking. Use `run` if you want to spawn multiple bots.
+        :returns: None
+        """
+        # create task of our run method
+        self._loop.create_task(self._connect_and_run(), name=f"InitialConnectAndRun:{self}")
         # run the loop forever
         try:
-            self._loop.run_forever()
+            if not self._loop.is_running():
+                self._loop.run_forever()
         except KeyboardInterrupt as error:
             self._stop_tasks_and_loop(error)
         logger.info("Stopped")
 
-    def stop(self) -> None:
+    def stop_mainloop(self) -> None:
         """
-        Stops the client
+        Stops all clients and the loop
         """
         logger.info("Stopping.")
         self._stop_tasks_and_loop("Stopping")
+
+    def stop(self) -> None:
+        """
+        Stops this client.
+        """
+        logger.debug(f"Stopping tasks.")
+        if self._transport:
+            self._transport.close()
+
+        logger.debug(f"Current Task: {asyncio.current_task(self._loop)}")
+        for task in self._async_tasks:
+            if task.done():
+                continue
+            logger.debug(f"Cancelling task {task}")
+            try:
+                task.cancel()
+            except asyncio.CancelledError as error:
+                logger.exception(error)
+        self._async_tasks.clear()
+        logger.debug("Stopped.")
 
     def _stop_tasks_and_loop(self, error: Union[KeyboardInterrupt, str] = None) -> None:
         """
@@ -831,16 +867,9 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         self._pong_response_timer.cancel()
         self._disconnect_timer.cancel()
 
-        self._transport.close()
-
-        for task in asyncio.all_tasks(self._loop):
-            logger.warning(f"Stopping task {task}")
-            try:
-                task.cancel()
-            except asyncio.CancelledError as error:
-                logger.exception(error)
+        self.stop()
         logger.info(asyncio.current_task(self._loop))
-        self._loop.create_task(self._connect_and_run())
+        self._async_tasks.append(self._loop.create_task(self._connect_and_run()))
 
     def _check_commands(self, message: Message) -> None:
         """
@@ -868,7 +897,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
             logger.debug(f"User {message.source.nick} tried to issue mod-only command: {message.parameters}")
             return
 
-        self._loop.create_task(command_callback.callback(self, message))
+        self._async_tasks.append(self._loop.create_task(command_callback.callback(self, message)))
 
     def _check_user_notice(self, message: Message) -> None:
         """
@@ -877,7 +906,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         :return: None
         """
         if self._has_tags and message.tags.get("msg-id") == "raid":
-            self._loop.create_task(self.on_raid(message))
+            self._async_tasks.append((self._loop.create_task(self.on_raid(message))))
 
     async def _on_disconnect_timer_timeout(self) -> None:
         """
@@ -906,7 +935,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         self._disconnect_timer.start()
 
         for task in self.tasks:
-            self._loop.create_task(task(self))
+            self._async_tasks.append(self._loop.create_task(task(self)))
 
         self._login()
         self._requests_tags()
@@ -1053,7 +1082,15 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         if callback is None:
             return logger.error("Callback must not be None.")
 
-        self._loop.create_task(callback(parsed_message))
+        self._async_tasks.append(self._loop.create_task(callback(parsed_message)))
+
+    async def on_user_left(self, message: Message) -> None:
+        """
+        On user left a channel
+        :param message: Message object
+        :returns: None
+        """
+        logger.debug(f"User {message.source.nick} left channel {message.command.channel}")
 
     def join(self, channel: str) -> None:
         """
@@ -1064,12 +1101,13 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         logger.debug(f"Joining {channel}")
         self.send_irc_data(f"JOIN #{channel}")
 
-    def leave(self, channel: str) -> None:
+    def leave(self, channel: str = None) -> None:
         """
         leave channel.
         :param channel: channel to leave
         :return: None
         """
+        channel = channel or self._channel
         logger.debug(f"Leaving {channel}")
         self.send_irc_data(f"PART #{channel}")
 
@@ -1120,3 +1158,16 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         :return: bool
         """
         return self.is_mod(message) or self.is_broadcaster(message)
+
+
+if os.environ.get("DISABLE_EXIT_HOOK", '0') == '0':
+    def _close_loop_on_exit() -> None:
+        try:
+            loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.stop()
+        except Exception as error:
+            logger.exception(f"Could not stop loop. {error}")
+
+
+    atexit.register(_close_loop_on_exit)

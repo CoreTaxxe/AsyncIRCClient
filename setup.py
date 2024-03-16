@@ -5,7 +5,7 @@ with open('README.md', 'r', encoding='utf-8') as f:
 
 setup(
     name='AsyncIRCClient',
-    version='0.1.3',
+    version='1.0.0',
     description='Async IRC Client',
     long_description=long_description,
     long_description_content_type='text/markdown',

@@ -67,6 +67,6 @@ if __name__ == "__main__":
             Proxy(ProxyType.HTTP, "ip", 1234, password="password", username="username"),
             Proxy.from_url("proxy_url")
         ]
-    ).run()
+    ).mainloop() # alternatively use .run() to run the bot non blocking.
 
 ```
