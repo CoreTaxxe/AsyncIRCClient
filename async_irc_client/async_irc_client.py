@@ -554,6 +554,7 @@ class IRCClient(IRCClientInterfaceMixin):
         connect and run irc loop
         :return: None
         """
+        return logger.debug("skipped")
         if self._use_proxies:
             try:
                 self._current_proxy: Proxy = next(self._proxy_cycle)
@@ -1158,16 +1159,3 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         :return: bool
         """
         return self.is_mod(message) or self.is_broadcaster(message)
-
-
-if os.environ.get("DISABLE_EXIT_HOOK", '0') == '0':
-    def _close_loop_on_exit() -> None:
-        try:
-            loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.stop()
-        except Exception as error:
-            logger.exception(f"Could not stop loop. {error}")
-
-
-    atexit.register(_close_loop_on_exit)
