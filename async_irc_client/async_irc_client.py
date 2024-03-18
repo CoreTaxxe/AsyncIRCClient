@@ -418,18 +418,15 @@ class IRCClientInterfaceMixin:
 
 class IRCClient(IRCClientInterfaceMixin):
 
-    def __init__(self, server: str, port: int, loop: Union[asyncio.AbstractEventLoop, None] = None,
-                 proxies: list[Proxy] = None):
+    def __init__(self, server: str, port: int, proxies: list[Proxy] = None):
         """
         constructor
         :param server: server to connect to
         :param port: port to connect to
-        :param loop: set custom event loop
         :param proxies: list of proxy objects to use to mask connection
         """
         self._server: str = server
         self._port: int = port
-        self._loop: Union[asyncio.AbstractEventLoop, None] = loop
         self._protocol: Union[AsyncIRCClientProtocol, None] = None
         self._transport: Union[transports.Transport, None] = None
         self._event_handler: dict[str, Callable] = {}
@@ -439,19 +436,20 @@ class IRCClient(IRCClientInterfaceMixin):
         self._use_proxies: bool = len(proxies) > 0
         self._current_proxy: Union[None, Proxy] = None
         self._retry_delay: int = 5
-        self._async_tasks: list[asyncio.Task] = []
+        self._async_tasks: set[asyncio.Task] = set()
 
-        # get event loop if none set
-        if self._loop is None:
-            self._loop = asyncio.get_event_loop() if is_event_loop_set() else asyncio.new_event_loop()
+    def _spawn_task(self, coro: Any, name: str = None) -> asyncio.Task:
+        """
+        Spawn a task and add done handler
+        """
+        if name is None:
+            task: asyncio.Task = asyncio.create_task(coro)
+        else:
+            task: asyncio.Task = asyncio.create_task(coro, name=name)
 
-    def _spawn_task(self, coro) -> asyncio.Task:
-        task: asyncio.Task = asyncio.get_event_loop().create_task(coro)
-        self._async_tasks.append(task)
+        self._async_tasks.add(task)
+        task.add_done_callback(self._async_tasks.discard)
         return task
-
-    def get_loop(self) -> asyncio.AbstractEventLoop:
-        return self._loop
 
     def add_proxy(self, proxy: Proxy) -> None:
         self._proxies.append(proxy)
@@ -490,7 +488,7 @@ class IRCClient(IRCClientInterfaceMixin):
         :return: None
         """
         # create task of our run method
-        self._async_tasks.append(self._loop.create_task(self._connect_and_run(), name=f"InitialConnectAndRun:{self}"))
+        self._spawn_task(self._connect_and_run(), f"InitialConnectAndRun:{self}")
         logger.info(f"Client {self} started.")
 
     def mainloop(self) -> None:
@@ -498,14 +496,19 @@ class IRCClient(IRCClientInterfaceMixin):
         Stats the clients mainloop. Blocking. Use `run` if you want to spawn multiple bots.
         :returns: None
         """
-        # create task of our run method
-        self._loop.create_task(self._connect_and_run(), name=f"InitialConnectAndRun:{self}")
+
         # run the loop forever
         try:
-            if not self._loop.is_running():
-                self._loop.run_forever()
+            loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+
+            task: asyncio.Task = loop.create_task(self._connect_and_run(), name=f"InitialConnectAndRun:{self}")
+            self._async_tasks.add(task)
+            task.add_done_callback(self._async_tasks.discard)
+            if not loop.is_running():
+                loop.run_forever()
+
         except KeyboardInterrupt as error:
-            self._stop_tasks_and_loop(error)
+            self._stop_all_tasks_and_loop(error)
         logger.info("Stopped")
 
     def stop_mainloop(self) -> None:
@@ -513,17 +516,18 @@ class IRCClient(IRCClientInterfaceMixin):
         Stops all clients and the loop
         """
         logger.info("Stopping.")
-        self._stop_tasks_and_loop("Stopping")
+        self._stop_all_tasks_and_loop("Stopping")
 
     def stop(self) -> None:
         """
         Stops this client.
         """
         logger.debug(f"Stopping tasks.")
+
         if self._transport:
             self._transport.close()
 
-        logger.debug(f"Current Task: {asyncio.current_task(self._loop)}")
+        logger.debug(f"Current Task: {asyncio.current_task()}")
         for task in self._async_tasks:
             if task.done():
                 continue
@@ -535,7 +539,7 @@ class IRCClient(IRCClientInterfaceMixin):
         self._async_tasks.clear()
         logger.debug("Stopped.")
 
-    def _stop_tasks_and_loop(self, error: Union[KeyboardInterrupt, str] = None) -> None:
+    def _stop_all_tasks_and_loop(self, error: Union[KeyboardInterrupt, str] = None) -> None:
         """
         stop tasks and loop
         :param error: error
@@ -545,14 +549,14 @@ class IRCClient(IRCClientInterfaceMixin):
         if self._transport:
             self._transport.close()
 
-        logger.debug(f"Current Task: {asyncio.current_task(self._loop)}")
-        for task in asyncio.all_tasks(self._loop):
+        logger.debug(f"Current Task: {asyncio.current_task()}")
+        for task in asyncio.all_tasks():
             logger.debug(f"Cancelling task {task}")
             try:
                 task.cancel()
             except asyncio.CancelledError as error:
                 logger.exception(error)
-        self._loop.stop()
+        asyncio.get_event_loop().stop()
         logger.debug("Stopped.")
 
     async def _connect_and_run(self) -> None:
@@ -573,7 +577,7 @@ class IRCClient(IRCClientInterfaceMixin):
                 await self._connect_and_run()
                 return
 
-            self._transport, self._protocol = await self._loop.create_connection(
+            self._transport, self._protocol = await asyncio.get_event_loop().create_connection(
                 lambda: AsyncIRCClientProtocol(
                     on_connection_made=self._on_protocol_connection_made,
                     on_connection_lost=self._on_protocol_connection_lost,
@@ -582,7 +586,7 @@ class IRCClient(IRCClientInterfaceMixin):
             )
 
         else:
-            self._transport, self._protocol = await self._loop.create_connection(
+            self._transport, self._protocol = await asyncio.get_event_loop().create_connection(
                 lambda: AsyncIRCClientProtocol(
                     on_connection_made=self._on_protocol_connection_made,
                     on_connection_lost=self._on_protocol_connection_lost,
@@ -723,10 +727,9 @@ class TwitchIRCBotInterfaceMixin:
 class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
     TWITCH_IRC_SERVER: str = "irc.chat.twitch.tv"
     TWITCH_IRC_PORT: int = 6667
-    command_callbacks: dict[str, CommandCallback] = {}
+    commands: dict[str, CommandCallback] = {}
     case_insensitive: list[str] = []
-    tasks: list[Callable] = []
-    _running_tasks: list[Callable] = []
+    loops: list[Callable] = []
 
     def __init__(self, oauth_token: str, nick_name: str, channel: str, timeout: int = 500, **kwargs):
         """
@@ -748,6 +751,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         self._channel: str = channel
         self._has_commands: bool = False
         self._has_tags: bool = False
+        self._is_ready: bool = False
         self._timeout: int = timeout
         self._disconnect_timer: Timer = Timer(self._timeout, self._on_disconnect_timer_timeout)
         self._pong_response_timer: Timer = Timer(20, self._on_pong_response_timer_timeout)
@@ -765,6 +769,9 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
 
         if aliases is None:
             aliases = []
+
+        command_settings: CommandSettings = {"name": name, "mod_only": mod_only, "aliases": aliases or [],
+                                             "case_sensitive": case_sensitive}
 
         def decorator(function):
             """
@@ -786,30 +793,20 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
                 return await function(cls, *args, **kwargs)
 
             command_callback: CommandCallback = CommandCallback(name, wrapper, mod_only, aliases, case_sensitive)
-
-            TwitchIRCBot.command_callbacks[name] = command_callback
-
-            if not case_sensitive:
-                TwitchIRCBot.case_insensitive.append(name.lower())
-
-            for alias in aliases:
-                TwitchIRCBot.command_callbacks[alias] = command_callback
-                TwitchIRCBot.case_insensitive.append(alias.lower())
-
-            return wrapper
+            return _UniqueCommandInterceptor(wrapper, command_settings, command_callback)
 
         return decorator
 
     @staticmethod
-    def loop(seconds: int = 0, time: str = None, wait_first: bool = False):
+    def loop(seconds: int = 0, time: str = None, wait_first: bool = False, wait_until_ready: bool = True):
         """
         repeat function in given intervals
         :param seconds: seconds
         :param time: time to repeat function at (for example 12:00)
         :param wait_first: wait first before executing the function
+        :param wait_until_ready: Wait until the bot is ready before processing
         :return: None
         """
-        loop_settings: LoopSettings = {"seconds": seconds, "time": time, "wait_first": wait_first}
 
         def decorator(function: Callable):
             """
@@ -818,30 +815,31 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
             :return: wrapper
             """
 
-            async def wrapper(*args, **kwargs):
+            async def wrapper(instance: TwitchIRCBot, *args, **kwargs):
                 """
                 wrapper function
+                :param instance: Twitch IRC
                 :param args: args
                 :param kwargs: kwargs
                 :return: None
                 """
-                if wait_first:
-                    while True:
+                has_to_wait: bool = wait_first
+
+                if wait_until_ready:
+                    while not instance.is_ready():
+                        await asyncio.sleep(1)
+
+                while True:
+                    if has_to_wait:
                         if time is None:
                             await asyncio.sleep(seconds)
                         else:
                             await asyncio.sleep(get_time_difference(time))
-                        await function(*args, **kwargs)
-                else:
-                    while True:
-                        await function(*args, **kwargs)
+                    else:
+                        has_to_wait = True
+                    await function(instance, *args, **kwargs)
 
-                        if time is None:
-                            await asyncio.sleep(seconds)
-                        else:
-                            await asyncio.sleep(get_time_difference(time))
-
-            return _UniqueLoopInterceptor(wrapper, loop_settings)
+            return _UniqueLoopInterceptor(wrapper)
 
         return decorator
 
@@ -875,8 +873,8 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         self._disconnect_timer.cancel()
 
         self.stop()
-        logger.info(asyncio.current_task(self._loop))
-        self._async_tasks.append(self._loop.create_task(self._connect_and_run()))
+        logger.info(f"Reconnecting from: {asyncio.current_task()}")
+        self._spawn_task(self._connect_and_run(), "Reconnect")
 
     def _check_commands(self, message: Message) -> None:
         """
@@ -893,7 +891,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         if command_name.lower() in self.case_insensitive:
             command_name = command_name.lower()
 
-        command_callback: CommandCallback = TwitchIRCBot.command_callbacks.get(command_name)
+        command_callback: CommandCallback = TwitchIRCBot.commands.get(command_name)
 
         if command_callback is None:
             logger.warning(f"No bound command found for: {command_parts}")
@@ -904,7 +902,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
             logger.debug(f"User {message.source.nick} tried to issue mod-only command: {message.parameters}")
             return
 
-        self._async_tasks.append(self._loop.create_task(command_callback.callback(self, message)))
+        self._spawn_task(command_callback.callback(self, message), "HandleMessage")
 
     def _check_user_notice(self, message: Message) -> None:
         """
@@ -913,7 +911,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         :return: None
         """
         if self._has_tags and message.tags.get("msg-id") == "raid":
-            self._async_tasks.append((self._loop.create_task(self.on_raid(message))))
+            self._spawn_task(self.on_raid(message), "OnRaid")
 
     async def _on_disconnect_timer_timeout(self) -> None:
         """
@@ -941,8 +939,8 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         # start timer
         self._disconnect_timer.start()
 
-        for task in self.tasks:
-            self._async_tasks.append(self._loop.create_task(task(self)))
+        for task in self.loops:
+            self._spawn_task(task(self), f"Task[{task}]")
 
         self._login()
         self._requests_tags()
@@ -973,6 +971,9 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         """
         logger.debug("Request commands capability.")
         self.send_irc_data("CAP REQ :twitch.tv/commands")
+
+    def is_ready(self) -> bool:
+        return self._is_ready
 
     def _on_protocol_data_received(self, message: str) -> None:
         """
@@ -1048,6 +1049,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
                 callback = self.on_user_left
 
             case "001":  # successful connection + other auth details
+                self._is_ready = True
                 callback = self.on_client_ready
 
             case "002":  # server hostname and version
@@ -1089,7 +1091,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         if callback is None:
             return logger.error("Callback must not be None.")
 
-        self._async_tasks.append(self._loop.create_task(callback(parsed_message)))
+        self._spawn_task(callback(parsed_message), "PropagateMessage")
 
     async def on_user_left(self, message: Message) -> None:
         """
@@ -1167,13 +1169,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         return self.is_mod(message) or self.is_broadcaster(message)
 
 
-class LoopSettings(TypedDict):
-    seconds: int
-    time: Optional[str]
-    wait_first: bool
-
-
-class TaskSettings(TypedDict):
+class CommandSettings(TypedDict):
     name: str
     mod_only: bool
     aliases: Optional[list[str]]
@@ -1181,18 +1177,33 @@ class TaskSettings(TypedDict):
 
 
 class _UniqueLoopInterceptor:
-    def __init__(self, function: Callable, settings: LoopSettings) -> None:
+    def __init__(self, function: Callable) -> None:
         self.function = function
-        self.settings: LoopSettings = settings
 
     def __set_name__(self, owner: TwitchIRCBot, name) -> None:
-        pass
+        loops: list[Callable] = getattr(owner, "loops", [])
+        loops.append(self.function)
+        setattr(owner, "loops", loops)
 
 
-class _UniqueTaskInterceptor:
-    def __init__(self, function: Callable, settings: TaskSettings) -> None:
+class _UniqueCommandInterceptor:
+    def __init__(self, function: Callable, settings: CommandSettings, command_callback: CommandCallback) -> None:
         self.function = function
-        self.settings: TaskSettings = settings
+        self.settings: CommandSettings = settings
+        self.command_callback: CommandCallback = command_callback
 
     def __set_name__(self, owner: TwitchIRCBot, name) -> None:
-        pass
+        commands: dict[str, CommandCallback] = getattr(owner, "commands", {})
+        commands[self.settings["name"]] = self.command_callback
+
+        case_insensitive: list[str] = getattr(owner, "case_insensitive", [])
+        if not self.settings["case_sensitive"]:
+            case_insensitive.append(self.settings["name"].lower())
+
+        for alias in self.settings["aliases"]:
+            commands[alias] = self.command_callback
+            if not self.settings["case_sensitive"]:
+                case_insensitive.append(alias.lower())
+
+        setattr(owner, "commands", commands)
+        setattr(owner, "case_insensitive", case_insensitive)
