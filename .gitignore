@@ -5,3 +5,4 @@
 /AsyncIRCClient.egg-info
 /venv*
 example.py
+decotest.py

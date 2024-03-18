@@ -7,14 +7,14 @@ import sys
 from asyncio import transports
 from dataclasses import dataclass, field
 from itertools import cycle
-from typing import Union, Callable, Any, Coroutine
+from typing import Union, Callable, Any, Coroutine, TypedDict, Optional
 
 from loguru import logger
+# noinspection PyProtectedMember
 from python_socks._errors import ProxyError
+# noinspection PyProtectedMember
 from python_socks._types import ProxyType
 from python_socks.async_.asyncio import Proxy
-import atexit
-import os
 
 logger.debug(sys.version)
 
@@ -99,7 +99,8 @@ def parse_command(cmp) -> Union[Command, None]:
     command_parts = cmp.split(' ')
 
     match (command_parts[0]):
-        case "JOIN" | "PART" | "NOTICE" | "CLEARCHAT" | "HOSTTARGET" | "PRIVMSG" | "USERSTATE" | "ROOMSTATE" | "PONG" | "USERNOTICE":
+        case "JOIN" | "PART" | "NOTICE" | "CLEARCHAT" | \
+             "HOSTTARGET" | "PRIVMSG" | "USERSTATE" | "ROOMSTATE" | "PONG" | "USERNOTICE":
             parsed_command.command = command_parts[0]
             parsed_command.channel_raw = command_parts[1]
             parsed_command.channel = command_parts[1][1:]
@@ -436,13 +437,18 @@ class IRCClient(IRCClientInterfaceMixin):
         self._proxies: list[Proxy] = proxies or []
         self._proxy_cycle: cycle[Proxy] = cycle(self._proxies)
         self._use_proxies: bool = len(proxies) > 0
-        self._current_proxy: Proxy = None
+        self._current_proxy: Union[None, Proxy] = None
         self._retry_delay: int = 5
         self._async_tasks: list[asyncio.Task] = []
 
         # get event loop if none set
         if self._loop is None:
             self._loop = asyncio.get_event_loop() if is_event_loop_set() else asyncio.new_event_loop()
+
+    def _spawn_task(self, coro) -> asyncio.Task:
+        task: asyncio.Task = asyncio.get_event_loop().create_task(coro)
+        self._async_tasks.append(task)
+        return task
 
     def get_loop(self) -> asyncio.AbstractEventLoop:
         return self._loop
@@ -557,6 +563,7 @@ class IRCClient(IRCClientInterfaceMixin):
         if self._use_proxies:
             try:
                 self._current_proxy: Proxy = next(self._proxy_cycle)
+                # noinspection PyProtectedMember
                 proxy_type: ProxyType = self._current_proxy._proxy_type
                 logger.debug(f"Using {proxy_type.name} Proxy {self._current_proxy}")
                 sock = await self._current_proxy.connect(dest_host=self._server, dest_port=self._port)
@@ -767,15 +774,16 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
             :return: The wrapper function.
             """
 
-            async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            async def wrapper(cls: 'TwitchIRCBot', *args: Any, **kwargs: Any) -> Any:
                 """
                 Wrapper function that executes the original function.
 
+                :param cls: class to be wrapped
                 :param args: Positional arguments passed to the function.
                 :param kwargs: Keyword arguments passed to the function.
                 :return: The result of the original function.
                 """
-                return await function(*args, **kwargs)
+                return await function(cls, *args, **kwargs)
 
             command_callback: CommandCallback = CommandCallback(name, wrapper, mod_only, aliases, case_sensitive)
 
@@ -801,6 +809,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         :param wait_first: wait first before executing the function
         :return: None
         """
+        loop_settings: LoopSettings = {"seconds": seconds, "time": time, "wait_first": wait_first}
 
         def decorator(function: Callable):
             """
@@ -832,9 +841,7 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
                         else:
                             await asyncio.sleep(get_time_difference(time))
 
-            TwitchIRCBot.tasks.append(wrapper)
-
-            return wrapper
+            return _UniqueLoopInterceptor(wrapper, loop_settings)
 
         return decorator
 
@@ -1160,14 +1167,32 @@ class TwitchIRCBot(IRCClient, TwitchIRCBotInterfaceMixin):
         return self.is_mod(message) or self.is_broadcaster(message)
 
 
-if os.environ.get("DISABLE_EXIT_HOOK", '0') == '0':
-    def _close_loop_on_exit() -> None:
-        try:
-            loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.stop()
-        except Exception as error:
-            logger.exception(f"Could not stop loop. {error}")
+class LoopSettings(TypedDict):
+    seconds: int
+    time: Optional[str]
+    wait_first: bool
 
 
-    atexit.register(_close_loop_on_exit)
+class TaskSettings(TypedDict):
+    name: str
+    mod_only: bool
+    aliases: Optional[list[str]]
+    case_sensitive: bool
+
+
+class _UniqueLoopInterceptor:
+    def __init__(self, function: Callable, settings: LoopSettings) -> None:
+        self.function = function
+        self.settings: LoopSettings = settings
+
+    def __set_name__(self, owner: TwitchIRCBot, name) -> None:
+        pass
+
+
+class _UniqueTaskInterceptor:
+    def __init__(self, function: Callable, settings: TaskSettings) -> None:
+        self.function = function
+        self.settings: TaskSettings = settings
+
+    def __set_name__(self, owner: TwitchIRCBot, name) -> None:
+        pass
