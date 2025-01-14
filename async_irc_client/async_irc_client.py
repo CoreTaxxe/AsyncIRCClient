@@ -425,13 +425,16 @@ class IRCClient(IRCClientInterfaceMixin):
         :param port: port to connect to
         :param proxies: list of proxy objects to use to mask connection
         """
+        if proxies is None:
+            proxies = []
+
         self._server: str = server
         self._port: int = port
         self._protocol: Union[AsyncIRCClientProtocol, None] = None
         self._transport: Union[transports.Transport, None] = None
         self._event_handler: dict[str, Callable] = {}
         self._is_connected: bool = False
-        self._proxies: list[Proxy] = proxies or []
+        self._proxies: list[Proxy] = proxies
         self._proxy_cycle: cycle[Proxy] = cycle(self._proxies)
         self._use_proxies: bool = len(proxies) > 0
         self._current_proxy: Union[None, Proxy] = None
