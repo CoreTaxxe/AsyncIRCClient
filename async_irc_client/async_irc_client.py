@@ -1,5 +1,5 @@
 __author__ = "coretaxxe"
-__version__ = "0.1.3"
+__version__ = "1.0.2"
 
 import asyncio
 import datetime
