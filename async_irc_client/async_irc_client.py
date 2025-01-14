@@ -1,5 +1,5 @@
 __author__ = "coretaxxe"
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 import asyncio
 import datetime
@@ -423,7 +423,7 @@ class IRCClient(IRCClientInterfaceMixin):
         constructor
         :param server: server to connect to
         :param port: port to connect to
-        :param proxies: list of proxy objects to use to mask connection
+        :param proxies: a list of proxy objects to use to mask connection
         """
         if proxies is None:
             proxies = []
