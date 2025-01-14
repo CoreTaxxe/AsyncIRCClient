@@ -436,7 +436,7 @@ class IRCClient(IRCClientInterfaceMixin):
         self._is_connected: bool = False
         self._proxies: list[Proxy] = proxies
         self._proxy_cycle: cycle[Proxy] = cycle(self._proxies)
-        self._use_proxies: bool = len(proxies) > 0
+        self._use_proxies: bool = len(self._proxies) > 0
         self._current_proxy: Union[None, Proxy] = None
         self._retry_delay: int = 5
         self._async_tasks: set[asyncio.Task] = set()
